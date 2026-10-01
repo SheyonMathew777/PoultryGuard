@@ -1,0 +1,26 @@
+{
+  "farms": [
+    {
+      "farmId": "farm-01",
+      "name": "PoultryGuard Demo Farm",
+      "sheds": [
+        {
+          "shedId": "shed-01",
+          "birdAgeDays": 21,
+          "livingBirds": 10000,
+          "feedCapacityKg": 5000,
+          "feedStartKg": 4200,
+          "waterStartPercent": 95
+        },
+        {
+          "shedId": "shed-02",
+          "birdAgeDays": 28,
+          "livingBirds": 9000,
+          "feedCapacityKg": 5000,
+          "feedStartKg": 3800,
+          "waterStartPercent": 92
+        }
+      ]
+    }
+  ]
+}

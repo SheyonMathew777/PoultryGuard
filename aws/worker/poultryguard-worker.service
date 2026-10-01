@@ -1,0 +1,16 @@
+[Unit]
+Description=PoultryGuard Telemetry Processing Worker
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/poultryguard-worker
+Environment="MQTT_URL=mqtt://172.31.23.126:1883"
+ExecStart=/usr/bin/node /home/ubuntu/poultryguard-worker/worker.js
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,198 @@
+[
+    {
+        "id": "pg-flow-001",
+        "type": "tab",
+        "label": "PoultryGuard",
+        "disabled": false,
+        "info": "PoultryGuard local MQTT telemetry validation flow"
+    },
+    {
+        "id": "pg-mqtt-in",
+        "type": "mqtt in",
+        "z": "pg-flow-001",
+        "name": "PoultryGuard Telemetry",
+        "topic": "poultryguard/+/+/telemetry/#",
+        "qos": "1",
+        "datatype": "auto",
+        "broker": "pg-broker",
+        "nl": false,
+        "rap": true,
+        "rh": 0,
+        "inputs": 0,
+        "x": 160,
+        "y": 160,
+        "wires": [
+            [
+                "pg-json"
+            ]
+        ]
+    },
+    {
+        "id": "pg-json",
+        "type": "json",
+        "z": "pg-flow-001",
+        "name": "Parse JSON",
+        "property": "payload",
+        "action": "",
+        "pretty": false,
+        "x": 380,
+        "y": 160,
+        "wires": [
+            [
+                "pg-validator"
+            ]
+        ]
+    },
+    {
+        "id": "pg-validator",
+        "type": "function",
+        "z": "pg-flow-001",
+        "name": "Validate Telemetry",
+        "func": "const p = msg.payload;\n\nconst required = [\n    \"eventId\",\n    \"farmId\",\n    \"shedId\",\n    \"deviceId\",\n    \"sensorType\",\n    \"value\",\n    \"unit\",\n    \"recordedAt\",\n    \"sequenceNumber\"\n];\n\nconst missing = required.filter(k =>\n    p == null ||\n    p[k] === undefined ||\n    p[k] === null ||\n    p[k] === \"\"\n);\n\nif (missing.length > 0) {\n    msg.validationError = \"Missing fields: \" + missing.join(\", \");\n    return [null, msg];\n}\n\nconst allowedSensors = [\n    \"temperature\",\n    \"humidity\",\n    \"ammonia\",\n    \"feedWeight\",\n    \"feedLevel\",\n    \"waterLevel\",\n    \"heartbeat\"\n];\n\nif (!allowedSensors.includes(p.sensorType)) {\n    msg.validationError = \"Unknown sensor type: \" + p.sensorType;\n    return [null, msg];\n}\n\nif (\n    p.sensorType !== \"heartbeat\" &&\n    (typeof p.value !== \"number\" || !Number.isFinite(p.value))\n) {\n    msg.validationError = \"Sensor value must be numeric\";\n    return [null, msg];\n}\n\nif (!Number.isInteger(p.sequenceNumber) || p.sequenceNumber < 1) {\n    msg.validationError = \"Invalid sequence number\";\n    return [null, msg];\n}\n\nif (Number.isNaN(Date.parse(p.recordedAt))) {\n    msg.validationError = \"Invalid recordedAt timestamp\";\n    return [null, msg];\n}\n\nmsg.validation = \"valid\";\nmsg.validatedAt = new Date().toISOString();\nreturn [msg, null];",
+        "outputs": 2,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 610,
+        "y": 160,
+        "wires": [
+            [
+                "pg-valid-debug",
+                "pg-rule-engine"
+            ],
+            [
+                "pg-invalid-debug"
+            ]
+        ]
+    },
+    {
+        "id": "pg-valid-debug",
+        "type": "debug",
+        "z": "pg-flow-001",
+        "name": "VALID Telemetry",
+        "active": false,
+        "tosidebar": true,
+        "console": false,
+        "tostatus": false,
+        "complete": "payload",
+        "targetType": "msg",
+        "x": 870,
+        "y": 130,
+        "wires": []
+    },
+    {
+        "id": "pg-invalid-debug",
+        "type": "debug",
+        "z": "pg-flow-001",
+        "name": "INVALID Telemetry",
+        "active": true,
+        "tosidebar": true,
+        "console": false,
+        "tostatus": false,
+        "complete": "true",
+        "targetType": "full",
+        "x": 830,
+        "y": 380,
+        "wires": []
+    },
+    {
+        "id": "pg-rule-engine",
+        "type": "function",
+        "z": "pg-flow-001",
+        "name": "PoultryGuard Rules",
+        "func": "const p = msg.payload;\nconst key = `${p.farmId}/${p.shedId}/${p.sensorType}`;\n\nlet counters = flow.get(\"faultCounters\") || {};\nlet count = counters[key] || 0;\n\nlet unsafe = false;\nlet severity = \"warning\";\nlet rule = \"\";\nlet actions = [];\n\n// ----------------------------\n// Determine unsafe conditions\n// ----------------------------\n\nif (p.sensorType === \"temperature\" && p.value > 32) {\n    unsafe = true;\n    rule = \"HIGH_TEMPERATURE\";\n    actions = [\n        { actuator: \"fan\", state: \"ON\" },\n        { actuator: \"cooling\", state: \"ON\" }\n    ];\n}\nelse if (p.sensorType === \"humidity\" && p.value > 70) {\n    unsafe = true;\n    rule = \"HIGH_HUMIDITY\";\n    actions = [\n        { actuator: \"fan\", state: \"ON\" }\n    ];\n}\nelse if (p.sensorType === \"ammonia\" && p.value > 20) {\n    unsafe = true;\n    severity = \"critical\";\n    rule = \"HIGH_AMMONIA\";\n    actions = [\n        { actuator: \"fan\", state: \"ON\" }\n    ];\n}\nelse if (p.sensorType === \"feedLevel\" && p.value < 15) {\n    unsafe = true;\n    rule = \"LOW_FEED\";\n    actions = [\n        { actuator: \"feeder\", state: \"ON\" }\n    ];\n}\nelse if (p.sensorType === \"waterLevel\" && p.value < 15) {\n    unsafe = true;\n    rule = \"LOW_WATER\";\n    actions = [\n        { actuator: \"pump\", state: \"ON\" }\n    ];\n}\n\n// ----------------------------\n// Safe reading resets counter\n// ----------------------------\n\nif (!unsafe) {\n    counters[key] = 0;\n    flow.set(\"faultCounters\", counters);\n    return [null, null];\n}\n\n// ----------------------------\n// Count consecutive faults\n// ----------------------------\n\ncount += 1;\ncounters[key] = count;\nflow.set(\"faultCounters\", counters);\n\n// First unsafe reading: wait for confirmation\nif (count < 2) {\n    return [null, null];\n}\n\n// Already triggered for this continuous fault.\n// Do not send the same alert again.\nif (count > 2) {\n    return [null, null];\n}\n\n// ----------------------------\n// Trigger exactly once at count 2\n// ----------------------------\n\nconst createdAt = new Date().toISOString();\n\nconst alert = {\n    alertId: `alert-${Date.now()}-${Math.random().toString(16).slice(2)}`,\n    farmId: p.farmId,\n    shedId: p.shedId,\n    sensorType: p.sensorType,\n    value: p.value,\n    unit: p.unit,\n    rule,\n    severity,\n    message: `${rule} detected in ${p.shedId}`,\n    createdAt\n};\n\nconst command = {\n    farmId: p.farmId,\n    shedId: p.shedId,\n    reason: rule,\n    actions,\n    createdAt\n};\n\nreturn [\n    {\n        topic: `poultryguard/${p.farmId}/${p.shedId}/alerts`,\n        payload: alert\n    },\n    {\n        topic: `poultryguard/${p.farmId}/${p.shedId}/commands`,\n        payload: command\n    }\n];",
+        "outputs": 2,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 870,
+        "y": 300,
+        "wires": [
+            [
+                "pg-alert-debug"
+            ],
+            [
+                "pg-command-debug",
+                "pg-command-out"
+            ]
+        ]
+    },
+    {
+        "id": "pg-alert-debug",
+        "type": "debug",
+        "z": "pg-flow-001",
+        "name": "ALERT Generated",
+        "active": true,
+        "tosidebar": true,
+        "console": false,
+        "tostatus": false,
+        "complete": "payload",
+        "targetType": "msg",
+        "x": 1080,
+        "y": 250,
+        "wires": []
+    },
+    {
+        "id": "pg-command-debug",
+        "type": "debug",
+        "z": "pg-flow-001",
+        "name": "ACTUATOR Command",
+        "active": true,
+        "tosidebar": true,
+        "console": false,
+        "tostatus": false,
+        "complete": "payload",
+        "targetType": "msg",
+        "x": 1090,
+        "y": 305,
+        "wires": []
+    },
+    {
+        "id": "pg-command-out",
+        "type": "mqtt out",
+        "z": "pg-flow-001",
+        "name": "Publish Actuator Command",
+        "topic": "",
+        "qos": "1",
+        "retain": "false",
+        "respTopic": "",
+        "contentType": "",
+        "userProps": "",
+        "correl": "",
+        "expiry": "",
+        "broker": "pg-broker",
+        "x": 1110,
+        "y": 360,
+        "wires": []
+    },
+    {
+        "id": "pg-broker",
+        "type": "mqtt-broker",
+        "name": "Local Mosquitto",
+        "broker": "localhost",
+        "port": "1883",
+        "clientid": "",
+        "autoConnect": true,
+        "usetls": false,
+        "protocolVersion": "4",
+        "keepalive": "60",
+        "cleansession": true,
+        "autoUnsubscribe": true,
+        "birthTopic": "",
+        "birthQos": "0",
+        "birthPayload": "",
+        "birthMsg": {},
+        "closeTopic": "",
+        "closeQos": "0",
+        "closePayload": "",
+        "closeMsg": {},
+        "willTopic": "",
+        "willQos": "0",
+        "willPayload": "",
+        "willMsg": {}
+    }
+]
